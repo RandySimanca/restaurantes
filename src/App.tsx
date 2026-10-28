@@ -7,6 +7,7 @@ import { WaiterDashboard } from './pages/waiter/WaiterDashboard';
 import { KitchenDashboard } from './pages/kitchen/KitchenDashboard';
 import { CashierDashboard } from './pages/cashier/CashierDashboard';
 import { AdminDashboard } from './pages/admin/AdminDashboard';
+import { SuperAdminDashboard } from './pages/superadmin/SuperAdminDashboard';
 
 /** Si ya hay sesión, manda a cada rol a su pantalla; si no, al login. */
 const HomeRedirect = () => {
@@ -32,6 +33,8 @@ function App() {
           <Route path="/kitchen/*" element={<RequireRole roles={['kitchen', 'admin']}><KitchenDashboard /></RequireRole>} />
           <Route path="/cashier/*" element={<RequireRole roles={['cashier', 'admin']}><CashierDashboard /></RequireRole>} />
           <Route path="/admin/*" element={<RequireRole roles={['admin']}><AdminDashboard /></RequireRole>} />
+          {/* Superadmin de plataforma: solo crea/suspende restaurantes y sus administradores */}
+          <Route path="/superadmin/*" element={<RequireRole roles={['superadmin']}><SuperAdminDashboard /></RequireRole>} />
           <Route path="*" element={<HomeRedirect />} />
         </Routes>
       </AuthWrapper>

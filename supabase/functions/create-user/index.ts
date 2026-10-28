@@ -1,146 +1,99 @@
-// Supabase Edge Function: create-user
-// Crea un usuario en auth.users y su perfil en public.profiles
-// Solo puede ser llamada por usuarios con rol 'admin'
+// Edge Function: create-user
+// - admin de un restaurante  -> crea usuarios (waiter/kitchen/cashier/admin) EN SU restaurante
+// - superadmin               -> crea un admin para el restaurante indicado en restaurant_id
+// Nunca permite crear un superadmin: ese se crea solo con supabase/setup-superadmin.sql.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-};
+import { corsHeaders, json, EMAIL_RE } from '../_shared/http.ts';
 
 Deno.serve(async (req: Request) => {
-  // Handle CORS preflight
-  if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders });
-  }
+  if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
 
   try {
-    // 1. Verificar que quien llama es un admin autenticado
     const authHeader = req.headers.get('Authorization');
-    if (!authHeader) {
-      return new Response(JSON.stringify({ error: 'No autorizado' }), {
-        status: 401,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
-    }
+    if (!authHeader) return json({ error: 'No autorizado' }, 401);
 
-    // Cliente con el token del usuario que hace la llamada (para verificar su rol)
-    const supabaseUser = createClient(
-      Deno.env.get('SUPABASE_URL')!,
-      Deno.env.get('SUPABASE_ANON_KEY')!,
-      { global: { headers: { Authorization: authHeader } } }
-    );
+    const url = Deno.env.get('SUPABASE_URL')!;
+    const supabaseUser = createClient(url, Deno.env.get('SUPABASE_ANON_KEY')!, {
+      global: { headers: { Authorization: authHeader } },
+    });
 
-    // Verificar que el usuario actual es admin
-    const { data: { user: callerUser }, error: userError } = await supabaseUser.auth.getUser();
-    if (userError || !callerUser) {
-      return new Response(JSON.stringify({ error: 'No autorizado' }), {
-        status: 401,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
-    }
+    const { data: { user: caller }, error: userError } = await supabaseUser.auth.getUser();
+    if (userError || !caller) return json({ error: 'No autorizado' }, 401);
 
-    const { data: callerProfile, error: profileError } = await supabaseUser
+    const { data: callerProfile } = await supabaseUser
       .from('profiles')
-      .select('role, restaurant_id')
-      .eq('id', callerUser.id)
+      .select('role, restaurant_id, status')
+      .eq('id', caller.id)
       .single();
 
-    if (profileError || callerProfile?.role !== 'admin') {
-      return new Response(JSON.stringify({ error: 'Solo los administradores pueden crear usuarios' }), {
-        status: 403,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
+    if (!callerProfile || callerProfile.status !== 'active' || !['admin', 'superadmin'].includes(callerProfile.role)) {
+      return json({ error: 'Solo los administradores pueden crear usuarios' }, 403);
     }
 
-    // 2. Leer los datos del nuevo usuario
-    const { email, password, full_name, role } = await req.json();
+    const body = await req.json();
+    const email = String(body.email ?? '').trim().toLowerCase();
+    const password = body.password;
+    const full_name = String(body.full_name ?? '').trim();
+    const role = body.role;
 
     if (!email || !password || !full_name || !role) {
-      return new Response(JSON.stringify({ error: 'Faltan campos requeridos: email, password, full_name, role' }), {
-        status: 400,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
+      return json({ error: 'Faltan campos requeridos: email, password, full_name, role' }, 400);
     }
-
     if (typeof password !== 'string' || password.length < 8) {
-      return new Response(JSON.stringify({ error: 'La contraseña debe tener al menos 8 caracteres' }), {
-        status: 400,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
+      return json({ error: 'La contraseña debe tener al menos 8 caracteres' }, 400);
     }
-    if (typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      return new Response(JSON.stringify({ error: 'Correo electrónico inválido' }), {
-        status: 400,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
-    }
+    if (!EMAIL_RE.test(email)) return json({ error: 'Correo electrónico inválido' }, 400);
+    if (full_name.length < 2) return json({ error: 'El nombre es demasiado corto' }, 400);
 
-    const allowedRoles = ['waiter', 'kitchen', 'cashier', 'admin'];
+    let restaurantId: string | null;
+    let allowedRoles: string[];
+    if (callerProfile.role === 'superadmin') {
+      restaurantId = body.restaurant_id ?? null;
+      allowedRoles = ['admin'];
+      if (!restaurantId) return json({ error: 'Falta restaurant_id' }, 400);
+    } else {
+      restaurantId = callerProfile.restaurant_id;
+      allowedRoles = ['waiter', 'kitchen', 'cashier', 'admin'];
+    }
     if (!allowedRoles.includes(role)) {
-      return new Response(JSON.stringify({ error: `Rol inválido. Debe ser uno de: ${allowedRoles.join(', ')}` }), {
-        status: 400,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
+      return json({ error: `Rol inválido. Debe ser uno de: ${allowedRoles.join(', ')}` }, 400);
     }
 
-    // 3. Usar service_role para crear el usuario (operación privilegiada)
-    const supabaseAdmin = createClient(
-      Deno.env.get('SUPABASE_URL')!,
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
-    );
+    const supabaseAdmin = createClient(url, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
+
+    // El restaurante debe existir y estar activo
+    const { data: restaurant } = await supabaseAdmin
+      .from('restaurants')
+      .select('id, status')
+      .eq('id', restaurantId)
+      .is('deleted_at', null)
+      .maybeSingle();
+    if (!restaurant) return json({ error: 'Restaurante no encontrado' }, 404);
+    if (restaurant.status !== 'active') return json({ error: 'El restaurante está suspendido' }, 403);
 
     const { data: newUser, error: createError } = await supabaseAdmin.auth.admin.createUser({
       email,
       password,
-      email_confirm: true, // Confirmar email automáticamente (no requiere verificación)
+      email_confirm: true,
     });
+    if (createError) return json({ error: createError.message }, 400);
 
-    if (createError) {
-      return new Response(JSON.stringify({ error: createError.message }), {
-        status: 400,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
-    }
-
-    // 4. Crear el perfil asociado al nuevo usuario
-    const { error: insertError } = await supabaseAdmin
-      .from('profiles')
-      .insert({
-        id: newUser.user!.id,
-        restaurant_id: callerProfile.restaurant_id,
-        full_name,
-        role,
-        status: 'active',
-      });
+    const { error: insertError } = await supabaseAdmin.from('profiles').insert({
+      id: newUser.user!.id,
+      restaurant_id: restaurantId,
+      full_name,
+      role,
+      status: 'active',
+    });
 
     if (insertError) {
-      // Rollback: borrar el usuario de auth si falla el perfil
-      await supabaseAdmin.auth.admin.deleteUser(newUser.user!.id);
-      return new Response(JSON.stringify({ error: `Error creando perfil: ${insertError.message}` }), {
-        status: 500,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
+      await supabaseAdmin.auth.admin.deleteUser(newUser.user!.id); // rollback
+      return json({ error: `Error creando perfil: ${insertError.message}` }, 500);
     }
 
-    return new Response(
-      JSON.stringify({
-        success: true,
-        user: {
-          id: newUser.user!.id,
-          email,
-          full_name,
-          role,
-        },
-      }),
-      { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    );
-
+    return json({ success: true, user: { id: newUser.user!.id, email, full_name, role } });
   } catch (err) {
-    return new Response(JSON.stringify({ error: String(err) }), {
-      status: 500,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-    });
+    return json({ error: String(err) }, 500);
   }
 });

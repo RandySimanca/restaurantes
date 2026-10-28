@@ -2,10 +2,11 @@ import { create } from 'zustand';
 import { supabase } from '../config/supabase';
 import type { User } from '@supabase/supabase-js';
 
-export type Role = 'admin' | 'waiter' | 'kitchen' | 'cashier';
+export type Role = 'superadmin' | 'admin' | 'waiter' | 'kitchen' | 'cashier';
 
 export interface Profile {
   id: string;
+  /** null solo para el superadmin de plataforma */
   restaurant_id: string | null;
   full_name: string;
   phone: string | null;
@@ -13,9 +14,15 @@ export interface Profile {
   status: string;
 }
 
+export interface Restaurant {
+  id: string;
+  name: string;
+}
+
 interface AuthState {
   user: User | null;
   profile: Profile | null;
+  restaurant: Restaurant | null;
   /** true mientras se resuelve la sesión Y el perfil (evita parpadeos y redirecciones prematuras) */
   loading: boolean;
   profileError: string | null;
@@ -30,7 +37,7 @@ export const useAuthStore = create<AuthState>((set, get) => {
   const sync = async (nextUser: User | null) => {
     if (!nextUser) {
       loadingFor = null;
-      set({ user: null, profile: null, profileError: null, loading: false });
+      set({ user: null, profile: null, restaurant: null, profileError: null, loading: false });
       return;
     }
 
@@ -43,7 +50,12 @@ export const useAuthStore = create<AuthState>((set, get) => {
     if (loadingFor === nextUser.id) return;
 
     loadingFor = nextUser.id;
-    set({ user: nextUser, profile: null, profileError: null, loading: true });
+    set({ user: nextUser, profile: null, restaurant: null, profileError: null, loading: true });
+
+    const fail = (message: string) => {
+      loadingFor = null;
+      set({ profile: null, restaurant: null, profileError: message, loading: false });
+    };
 
     const { data, error } = await supabase
       .from('profiles')
@@ -53,22 +65,38 @@ export const useAuthStore = create<AuthState>((set, get) => {
 
     // Si mientras tanto cambió el usuario, descartamos este resultado
     if (loadingFor !== nextUser.id) return;
-    loadingFor = null;
 
-    if (error) {
-      set({ profile: null, profileError: `No se pudo cargar tu perfil: ${error.message}`, loading: false });
-    } else if (!data) {
-      set({ profile: null, profileError: 'Tu usuario no tiene un perfil asignado. Pide al administrador que lo cree.', loading: false });
-    } else if (data.status !== 'active') {
-      set({ profile: null, profileError: 'Tu usuario está desactivado. Habla con el administrador.', loading: false });
-    } else {
-      set({ profile: data as Profile, profileError: null, loading: false });
+    if (error) return fail(`No se pudo cargar tu perfil: ${error.message}`);
+    if (!data) return fail('Tu usuario no tiene un perfil asignado. Pide al administrador que lo cree.');
+    if (data.status !== 'active') return fail('Tu usuario está desactivado. Habla con el administrador.');
+
+    // Todos menos el superadmin pertenecen a un restaurante, y ese restaurante debe estar activo.
+    // Si está suspendido, la RLS no devuelve la fila y lo tratamos como no disponible.
+    let restaurant: Restaurant | null = null;
+    if (data.role !== 'superadmin') {
+      if (!data.restaurant_id) return fail('Tu usuario no está asociado a ningún restaurante.');
+
+      const res = await supabase
+        .from('restaurants')
+        .select('id, name')
+        .eq('id', data.restaurant_id)
+        .maybeSingle();
+
+      if (loadingFor !== nextUser.id) return;
+      if (res.error || !res.data) {
+        return fail('El restaurante de tu usuario está suspendido o no está disponible. Contacta a soporte.');
+      }
+      restaurant = res.data as Restaurant;
     }
+
+    loadingFor = null;
+    set({ profile: data as Profile, restaurant, profileError: null, loading: false });
   };
 
   return {
     user: null,
     profile: null,
+    restaurant: null,
     loading: true,
     profileError: null,
 
@@ -89,7 +117,7 @@ export const useAuthStore = create<AuthState>((set, get) => {
     logout: async () => {
       await supabase.auth.signOut();
       loadingFor = null;
-      set({ user: null, profile: null, profileError: null });
+      set({ user: null, profile: null, restaurant: null, profileError: null });
     },
   };
 });

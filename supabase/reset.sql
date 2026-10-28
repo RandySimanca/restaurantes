@@ -9,6 +9,7 @@ TRUNCATE TABLE
     public.audit_logs,
     public.void_requests,
     public.payments,
+    public.cash_handovers,
     public.kitchen_order_items,
     public.kitchen_orders,
     public.order_items,

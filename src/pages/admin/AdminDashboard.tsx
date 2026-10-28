@@ -34,7 +34,7 @@ const ROLE_ICONS: Record<UserRole, string> = {
 };
 
 export const AdminDashboard = () => {
-  const { profile, logout } = useAuthStore();
+  const { profile, restaurant, logout } = useAuthStore();
   const [staff, setStaff] = useState<StaffUser[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -104,6 +104,18 @@ export const AdminDashboard = () => {
     }
   };
 
+  const toggleStatus = async (u: StaffUser) => {
+    const next = u.status === 'active' ? 'inactive' : 'active';
+    if (next === 'inactive' && !window.confirm(`¿Desactivar a ${u.full_name}? No podrá iniciar sesión.`)) return;
+
+    const { error: updateError } = await supabase.from('profiles').update({ status: next }).eq('id', u.id);
+    if (updateError) {
+      window.alert(updateError.message);
+      return;
+    }
+    setStaff(current => current.map(x => (x.id === u.id ? { ...x, status: next } : x)));
+  };
+
   const timeAgo = (dateStr: string) => {
     const diff = Date.now() - new Date(dateStr).getTime();
     const days = Math.floor(diff / 86400000);
@@ -128,7 +140,7 @@ export const AdminDashboard = () => {
           <span style={{ fontSize: '24px' }}>👑</span>
           <div>
             <div style={{ color: '#e2e8f0', fontWeight: 700, fontSize: '16px' }}>Panel Administrador</div>
-            <div style={{ color: '#a78bfa', fontSize: '12px' }}>{profile?.full_name}</div>
+            <div style={{ color: '#a78bfa', fontSize: '12px' }}>{restaurant?.name} · {profile?.full_name}</div>
           </div>
         </div>
         <button
@@ -279,10 +291,10 @@ export const AdminDashboard = () => {
                   <input
                     type="password"
                     required
-                    minLength={6}
+                    minLength={8}
                     value={form.password}
                     onChange={e => setForm({ ...form, password: e.target.value })}
-                    placeholder="Mínimo 6 caracteres"
+                    placeholder="Mínimo 8 caracteres"
                     style={inputStyle}
                   />
                 </div>
@@ -352,6 +364,7 @@ export const AdminDashboard = () => {
                   padding: '16px 20px',
                   borderBottom: i < staff.length - 1 ? '1px solid rgba(51, 65, 85, 0.6)' : 'none',
                   transition: 'background 0.15s',
+                  opacity: user.status === 'active' ? 1 : 0.55,
                 }}
                 onMouseEnter={e => (e.currentTarget.style.background = 'rgba(51, 65, 85, 0.3)')}
                 onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
@@ -395,6 +408,25 @@ export const AdminDashboard = () => {
                 }}>
                   {ROLE_LABELS[user.role]}
                 </span>
+
+                {/* Activar / desactivar (no sobre uno mismo) */}
+                {user.id !== profile?.id && (
+                  <button
+                    onClick={() => toggleStatus(user)}
+                    style={{
+                      marginLeft: '12px',
+                      background: 'transparent',
+                      border: '1px solid rgba(148, 163, 184, 0.4)',
+                      color: '#cbd5e1',
+                      borderRadius: '6px',
+                      padding: '4px 10px',
+                      fontSize: '12px',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {user.status === 'active' ? 'Desactivar' : 'Activar'}
+                  </button>
+                )}
               </div>
             ))
           )}
